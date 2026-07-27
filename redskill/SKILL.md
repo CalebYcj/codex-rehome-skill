@@ -1,6 +1,6 @@
 ---
 name: codex-rehome
-description: Use when 用户需要在 Mac 与 Windows 之间迁移、备份或恢复 Codex Desktop，包括换电脑、离职交接、同机重装系统、恢复历史对话与项目、迁移 skills/plugins/generated images，或把真实 Claude Code / Claude Desktop agent 历史整理成 Codex 可继续使用的交接包。
+description: Use when 用户需要在 Mac 与 Windows 之间迁移、备份或恢复 Codex Desktop，包括换电脑、离职交接、同机重装系统、恢复历史对话与项目、迁移 skills/plugins/generated images。
 ---
 
 # Codex Rehome
@@ -14,7 +14,6 @@ description: Use when 用户需要在 Mac 与 Windows 之间迁移、备份或�
 - Windows -> Windows
 - Mac -> Mac
 - 同一台 Windows 电脑重装系统前备份、重装后恢复
-- Claude Code / Claude Desktop agent 历史 -> Codex 项目交接包
 
 ## 第一原则
 
@@ -36,45 +35,6 @@ description: Use when 用户需要在 Mac 与 Windows 之间迁移、备份或�
 - ZIP 准备通过飞书、网盘、局域网、移动硬盘还是其他私密方式传输。
 
 默认使用 `standard` 模式。除非用户明确要求并理解风险，不要迁移 auth token、浏览器登录态、Cookies、`.env`、API key、私钥或其他 secrets。
-
-## Claude Code 转 Codex
-
-如果用户说“Claude Code 转 Codex”“Claude 用户转 GPT/Codex”“把 Claude 的项目对话带到 Codex”，先走探测，不要直接承诺成功。
-
-运行只读检查：
-
-```powershell
-python .\scripts\inspect_claude_agent_sources.py --json
-```
-
-结果解释：
-
-- `exportable_transcripts_found`：找到了真实 Claude JSONL transcript，可以继续导出。
-- `installed_but_no_entitled_claude_code_sessions`：Claude 已安装，但当前账号没有可用 Claude Code 会话，常见原因是免费账号触发 `Claude Code requires a Pro or Max subscription`。明确告诉用户：当前没有真实 Claude Code 历史可迁移。
-- `no_exportable_transcripts_found`：没有找到支持的本地 Claude transcript。
-
-有真实 transcript 时再导出：
-
-```powershell
-python .\scripts\export_claude_to_codex_handoff.py `
-  --source "<claude-jsonl-file-or-session-directory>" `
-  --skills-source "$env:USERPROFILE\.claude\skills" `
-  --project-source "<Claude 实际操作过的项目文件夹>" `
-  --out "$env:USERPROFILE\Documents" `
-  --title "Claude To Codex Handoff"
-```
-
-这个 handoff 可以同时包含 Claude 对话 transcript、Claude skills 和 Claude 实际操作过的项目文件。它是给 Codex 读取并继续工作的交接包，不是把 Claude 会话伪装成 Codex 左侧栏原生历史。
-
-验收：
-
-```powershell
-python .\scripts\verify_agent_bridge_handoff.py "<handoff-folder>" --json
-```
-
-这个功能的定位是“交接包”，不是把 Claude 对话原样塞进 Codex 左侧栏。导出后让 Codex 打开 handoff 文件夹，先读 `next-steps-for-codex.md` 再继续干活。
-
-当前版本不做 ChatGPT 网页端导入。
 
 ## 原电脑：打包
 
