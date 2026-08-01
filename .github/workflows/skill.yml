@@ -36,3 +36,4 @@ jobs:
         run: |
           bash -n scripts/*.sh
           bash tests/mac_packager_metadata_test.sh
+          bash tests/mac_restore_socket_backup_test.sh

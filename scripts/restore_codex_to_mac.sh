@@ -133,7 +133,44 @@ backup_copy_if_exists() {
     echo "Backing up existing data copy:"
     echo "  $path"
     echo "  -> $backup"
-    cp -a "$path" "$backup"
+    if [[ -d "$path" ]]; then
+      if ! command -v rsync >/dev/null 2>&1; then
+        echo "rsync is required to back up existing Codex data without copying runtime sockets or login state." >&2
+        exit 1
+      fi
+      mkdir -p "$backup"
+      rsync -aE \
+        --exclude='/ipc/' \
+        --exclude='*.sock' \
+        --exclude='*.socket' \
+        --exclude='Singleton*' \
+        --exclude='auth.json' \
+        --exclude='config.toml' \
+        --exclude='installation_id' \
+        --exclude='chrome-native-hosts-v2.json' \
+        --exclude='credentials.json' \
+        --exclude='token.json' \
+        --exclude='tokens.json' \
+        --exclude='Cookies' \
+        --exclude='Cookies-journal' \
+        --exclude='Login Data*' \
+        --exclude='Local Storage/' \
+        --exclude='Session Storage/' \
+        --exclude='IndexedDB/' \
+        --exclude='WebStorage/' \
+        --exclude='.env' \
+        --exclude='.env.*' \
+        --exclude='*.pem' \
+        --exclude='*.key' \
+        --exclude='*.p12' \
+        --exclude='*.pfx' \
+        --exclude='*.ppk' \
+        --exclude='id_rsa' \
+        --exclude='id_ed25519' \
+        "$path/" "$backup/"
+    else
+      cp -p "$path" "$backup"
+    fi
   fi
 }
 
