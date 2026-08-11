@@ -217,7 +217,8 @@ rm -f "$STAGE/appdata_roaming/Codex/SingletonLock" \
   "$STAGE/appdata_roaming/Codex/SingletonSocket" \
   "$STAGE/appdata_roaming/Codex/RunningChromeVersion"
 
-for project in "${PROJECTS[@]}"; do
+for project in "${PROJECTS[@]:-}"; do
+  [[ -n "$project" ]] || continue
   if [[ -d "$project" ]]; then
     base="$(basename "$project")"
     copy_dir "$project" "$STAGE/projects/$base"
@@ -226,7 +227,8 @@ for project in "${PROJECTS[@]}"; do
   fi
 done
 
-for chat in "${SELECTED_CHATS[@]}"; do
+for chat in "${SELECTED_CHATS[@]:-}"; do
+  [[ -n "$chat" ]] || continue
   if [[ -f "$chat" ]]; then
     cp -p "$chat" "$STAGE/selected_chats/$(basename "$chat")"
   else
@@ -242,7 +244,17 @@ export_ui_ready_metadata() {
     return
   fi
 
-  "$py" - "$request_path" "$STAMP" "$HOME" "$STAGE" "$METADATA" "$HOME/.codex" "$HOME/.codex/.codex-global-state.json" "${PROJECTS[@]}" -- "${SELECTED_CHATS[@]}" <<'PY'
+  local export_args=()
+  local project chat
+  for project in "${PROJECTS[@]:-}"; do
+    [[ -n "$project" ]] && export_args+=("$project")
+  done
+  export_args+=(--)
+  for chat in "${SELECTED_CHATS[@]:-}"; do
+    [[ -n "$chat" ]] && export_args+=("$chat")
+  done
+
+  "$py" - "$request_path" "$STAMP" "$HOME" "$STAGE" "$METADATA" "$HOME/.codex" "$HOME/.codex/.codex-global-state.json" "${export_args[@]}" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -507,7 +519,8 @@ export_ui_ready_metadata
     "$HOME/Library/Application Support/Codex/Session Storage"; do
     [[ -e "$path" ]] && echo "$path"
   done
-  for project in "${PROJECTS[@]}"; do
+  for project in "${PROJECTS[@]:-}"; do
+    [[ -n "$project" ]] || continue
     [[ -d "$project" ]] && find "$project" -name ".env" -o -name ".env.*" -o -name "*.pem" -o -name "*.key" 2>/dev/null | sed 's#^#project: #'
   done
   if [[ -d "$HOME/.ssh" ]]; then
