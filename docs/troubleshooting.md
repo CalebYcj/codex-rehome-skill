@@ -6,6 +6,8 @@ This page lists common issues when migrating OpenAI Codex Desktop between Mac an
 
 Some live Codex or Git cache folders can contain socket or IPC files. The package scripts exclude `*.ipc`, `*.sock`, runtime folders, and process manager state by default.
 
+Older Mac restore scripts could still fail while backing up an existing target `~/.codex` directory because `cp -a` cannot copy a Unix socket such as `~/.codex/ipc/ipc.sock`. The current restore script uses a filtered `rsync` backup that skips runtime sockets, browser login state, auth/config identity files, `.env` files, and private keys. If a restore stops during the backup step, update the restore script and rerun it after fully quitting Codex; the merge has not started yet at that point.
+
 ## `vendor_imports` Or Git Object Permission Denied
 
 Some cached Git objects under runtime or vendor import folders may be unreadable. Standard mode excludes `vendor_imports`, `.git`, `node_modules`, `.venv`, `venv`, and `__pycache__`.
