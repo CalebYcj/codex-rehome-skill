@@ -80,6 +80,9 @@ function Get-UiReadyReport {
             selected_chats_with_session_meta_target_cwd = 0
             selected_chats_without_source_path_in_jsonl = 0
             restored_projects_in_global_state = 0
+            sqlite_quick_check_ok = $false
+            sqlite_structural_source_paths = 0
+            global_state_structural_source_paths = 0
         }
     }
     $pyCode = @'
@@ -125,6 +128,39 @@ for entry in path_map.get("projects", []) or []:
         source_variants.append(str(src))
         source_variants.append(str(src).replace("\\", "\\\\"))
         source_variants.append(str(src).replace("\\", "/"))
+
+def normalized_path(value):
+    return str(value or "").replace("\\\\", "\\").replace("\\", "/").lower()
+
+normalized_sources = list(dict.fromkeys(normalized_path(value) for value in source_variants if value))
+
+def contains_source_path(value):
+    candidate = normalized_path(value)
+    return any(source and source in candidate for source in normalized_sources)
+
+TEXT_FIELDS = {
+    "message", "messages", "content", "text", "input", "output", "instructions",
+    "title", "preview", "first_user_message",
+}
+PATH_FIELDS = {
+    "cwd", "project", "project_path", "path", "workspace_root",
+    "working_directory", "worktree", "agent_path", "rollout", "rollout_path",
+}
+
+def count_structural_source_paths(value):
+    count = 0
+    if isinstance(value, list):
+        return sum(count_structural_source_paths(item) for item in value)
+    if not isinstance(value, dict):
+        return count
+    for field, item in value.items():
+        if field in TEXT_FIELDS:
+            continue
+        if isinstance(item, (dict, list)):
+            count += count_structural_source_paths(item)
+        elif field in PATH_FIELDS and isinstance(item, str) and contains_source_path(item):
+            count += 1
+    return count
 
 def selected_id_from_file(path):
     try:
@@ -203,6 +239,22 @@ def session_meta_cwd(path):
         pass
     return ""
 
+def session_structural_source_paths(path):
+    if not path or not path.exists():
+        return 0
+    count = 0
+    try:
+        for line in path.read_text(encoding="utf-8", errors="ignore").splitlines():
+            if not line.strip():
+                continue
+            try:
+                count += count_structural_source_paths(json.loads(line))
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return count
+
 def newest_state_db():
     dbs = sorted(codex_home.glob("state_*.sqlite"), key=lambda p: p.stat().st_mtime if p.exists() else 0, reverse=True)
     return dbs[0] if dbs else None
@@ -217,10 +269,22 @@ meta_cwd_count = 0
 no_source_count = 0
 rows = {}
 db = newest_state_db()
+sqlite_quick_check_ok = False
+sqlite_structural_source_paths = 0
 if db:
     try:
         con = sqlite3.connect(str(db))
         con.row_factory = sqlite3.Row
+        quick_rows = con.execute("pragma quick_check").fetchall()
+        sqlite_quick_check_ok = bool(quick_rows) and all(str(row[0]).lower() == "ok" for row in quick_rows)
+        columns = [str(row[1]) for row in con.execute("pragma table_info(threads)").fetchall()]
+        structural_columns = [column for column in ["cwd", "rollout_path", "agent_path"] if column in columns]
+        if structural_columns:
+            query = "select " + ",".join(structural_columns) + " from threads"
+            for structural_row in con.execute(query).fetchall():
+                sqlite_structural_source_paths += sum(
+                    1 for value in structural_row if isinstance(value, str) and contains_source_path(value)
+                )
         for tid in selected_ids:
             try:
                 row = con.execute("select * from threads where id=?", (tid,)).fetchone()
@@ -236,8 +300,7 @@ for tid in selected_ids:
     session = find_session_file(tid)
     if session:
         sessions_count += 1
-        text = session.read_text(encoding="utf-8", errors="ignore")
-        if not any(old and old in text for old in source_variants):
+        if session_structural_source_paths(session) == 0:
             no_source_count += 1
         cwd = session_meta_cwd(session)
         if cwd and (not target_projects or cwd in target_projects):
@@ -260,6 +323,14 @@ for target in target_projects:
     if target and all(target in (global_state.get(key) or []) for key in ["electron-saved-workspace-roots", "project-order", "active-workspace-roots"]):
         global_count += 1
 
+global_state_structural_source_paths = 0
+for key in ["electron-saved-workspace-roots", "project-order", "active-workspace-roots", "thread-workspace-root-hints", "thread-projectless-output-directories"]:
+    value = global_state.get(key)
+    if isinstance(value, list):
+        global_state_structural_source_paths += sum(1 for item in value if isinstance(item, str) and contains_source_path(item))
+    elif isinstance(value, dict):
+        global_state_structural_source_paths += sum(1 for item in value.values() if isinstance(item, str) and contains_source_path(item))
+
 print(json.dumps({
     "selected_chats": len(selected_ids),
     "selected_chats_in_restored_sessions": sessions_count,
@@ -270,6 +341,9 @@ print(json.dumps({
     "selected_chats_with_session_meta_target_cwd": meta_cwd_count,
     "selected_chats_without_source_path_in_jsonl": no_source_count,
     "restored_projects_in_global_state": global_count,
+    "sqlite_quick_check_ok": sqlite_quick_check_ok,
+    "sqlite_structural_source_paths": sqlite_structural_source_paths,
+    "global_state_structural_source_paths": global_state_structural_source_paths,
 }, ensure_ascii=False))
 '@
     $tmpPy = Join-Path $env:TEMP ("codex-rehome-verify-ui-ready-" + [Guid]::NewGuid().ToString("N") + ".py")
@@ -292,6 +366,9 @@ print(json.dumps({
             selected_chats_with_session_meta_target_cwd = 0
             selected_chats_without_source_path_in_jsonl = 0
             restored_projects_in_global_state = 0
+            sqlite_quick_check_ok = $false
+            sqlite_structural_source_paths = 0
+            global_state_structural_source_paths = 0
         }
     } finally {
         Remove-Item -LiteralPath $tmpPy -Force -ErrorAction SilentlyContinue
@@ -332,6 +409,9 @@ $SelectedWithTargetCwd = [int]$Ui.selected_chats_with_target_cwd
 $SelectedWithMetaCwd = [int]$Ui.selected_chats_with_session_meta_target_cwd
 $SelectedWithoutSourcePath = [int]$Ui.selected_chats_without_source_path_in_jsonl
 $RestoredProjectsInGlobalState = [int]$Ui.restored_projects_in_global_state
+$SqliteQuickCheckOk = [bool]$Ui.sqlite_quick_check_ok
+$SqliteStructuralSourcePaths = [int]$Ui.sqlite_structural_source_paths
+$GlobalStateStructuralSourcePaths = [int]$Ui.global_state_structural_source_paths
 $SelectedSessionsReady = ($SelectedChats -eq 0 -or $SelectedInSessions -eq $SelectedChats)
 $SelectedIndexReady = ($SelectedChats -eq 0 -or $SelectedInIndex -eq $SelectedChats)
 $StateThreadsReady = ($SelectedChats -eq 0 -or $SelectedInState -eq $SelectedChats)
@@ -341,6 +421,7 @@ $SessionJsonlPathReady = ($SelectedChats -eq 0 -or $SelectedWithMetaCwd -eq $Sel
 $SourcePathRemovedReady = ($SelectedChats -eq 0 -or $SelectedWithoutSourcePath -eq $SelectedChats)
 $GlobalProjectRegistryReady = ($RestoredProjectCount -eq 0 -or $RestoredProjectsInGlobalState -eq $RestoredProjectCount)
 $AppProjectRegistrationReady = ($RestoredProjectCount -eq 0 -or (($Registration.status -eq "invoked" -or $Registration.status -eq "skipped") -and $Registration.count -ge $RestoredProjectCount))
+$StructuralPathsReady = ($SqliteStructuralSourcePaths -eq 0 -and $GlobalStateStructuralSourcePaths -eq 0)
 
 $Report = [ordered]@{
     generated_at = (Get-Date).ToString("s")
@@ -371,6 +452,8 @@ $Report = [ordered]@{
         selected_chats_with_session_meta_target_cwd = $SelectedWithMetaCwd
         selected_chats_without_source_path_in_jsonl = $SelectedWithoutSourcePath
         restored_projects_in_global_state = $RestoredProjectsInGlobalState
+        sqlite_structural_source_paths = $SqliteStructuralSourcePaths
+        global_state_structural_source_paths = $GlobalStateStructuralSourcePaths
     }
     ui_readiness = [ordered]@{
         selected_chats_in_sessions_ready = $SelectedSessionsReady
@@ -380,6 +463,8 @@ $Report = [ordered]@{
         project_path_mapping_ready = $PathMappingReady
         session_jsonl_path_mapping_ready = $SessionJsonlPathReady
         source_path_removed_ready = $SourcePathRemovedReady
+        sqlite_quick_check_ready = $SqliteQuickCheckOk
+        structural_source_paths_ready = $StructuralPathsReady
         global_project_registry_ready = $GlobalProjectRegistryReady
         app_project_registration_ready = $AppProjectRegistrationReady
     }
@@ -466,6 +551,7 @@ foreach ($path in $Report.project_candidates) {
 
 Write-Host ""
 Write-Host "Next checks:"
-Write-Host "  1. Open Codex and confirm old threads are visible."
-Write-Host "  2. If app_project_registration_ready is false, run: codex app <restored-project-path>, or reopen that project folder from Codex Desktop."
-Write-Host "  3. Reconnect GitHub, Gmail, Chrome, Feishu, or other external services if prompted."
+Write-Host "  1. Open Codex, wait for it to finish loading, then fully close it and rerun this verifier."
+Write-Host "  2. Confirm sqlite_quick_check_ready and structural_source_paths_ready remain true after that restart cycle."
+Write-Host "  3. If app_project_registration_ready is false, run: codex app <restored-project-path>, or reopen that project folder from Codex Desktop."
+Write-Host "  4. Reconnect GitHub, Gmail, Chrome, Feishu, or other external services if prompted."

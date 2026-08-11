@@ -56,10 +56,10 @@ try {
     $SourceProject = "C:\Users\OldUser\Documents\visual"
     $ThreadId = "11111111-2222-3333-4444-555555555555"
     $SessionPath = Join-Path $Package "home\.codex\sessions\$ThreadId.jsonl"
-    $SessionText = @"
-{"type":"session_meta","payload":{"id":"$ThreadId","thread_name":"Visual restored","cwd":"$SourceProject"}}
-{"type":"event","payload":{"message":{"role":"user","content":"open $SourceProject"}}}
-"@
+    $SessionText = @(
+        (@{ type = "session_meta"; payload = @{ id = $ThreadId; thread_name = "Visual restored"; cwd = $SourceProject } } | ConvertTo-Json -Depth 8 -Compress)
+        (@{ type = "event"; payload = @{ message = @{ role = "user"; content = "open $SourceProject" } } } | ConvertTo-Json -Depth 8 -Compress)
+    ) -join "`n"
     Write-Utf8NoBomLf -Path $SessionPath -Text $SessionText
     Write-Utf8NoBomLf -Path (Join-Path $Package "home\.codex\session_index.jsonl") -Text "{""id"":""$ThreadId"",""thread_name"":""Visual restored"",""updated_at"":""2026-06-18T10:00:00Z""}`n"
     Write-Utf8NoBomLf -Path (Join-Path $Package "projects\visual\README.md") -Text "visual project`n"
@@ -157,9 +157,13 @@ con.close()
         $RegistrationReport = Join-Path $TargetHome ".codex\codex-rehome-project-registration-report.json"
         Assert-True (Test-Path -LiteralPath $RegistrationReport -PathType Leaf) "Project registration report was not written."
 
-        $RestoredSession = Get-Content -LiteralPath (Join-Path $TargetHome ".codex\sessions\$ThreadId.jsonl") -Raw
-        Assert-True (-not $RestoredSession.Contains($SourceProject)) "Old Windows source path remained in restored session JSONL."
-        Assert-True ($RestoredSession.Contains($ProjectsDir)) "Restored session JSONL does not contain target project path."
+        $RestoredSessionPath = Join-Path $TargetHome ".codex\sessions\$ThreadId.jsonl"
+        $RestoredRows = @(Get-Content -LiteralPath $RestoredSessionPath -Encoding UTF8 | Where-Object {
+            -not [string]::IsNullOrWhiteSpace($_)
+        } | ForEach-Object { $_ | ConvertFrom-Json })
+        $TargetProject = Join-Path $ProjectsDir "visual"
+        Assert-True ([string]$RestoredRows[0].payload.cwd -eq $TargetProject) "Structural session cwd was not path-mapped."
+        Assert-True ([string]$RestoredRows[1].payload.message.content -eq "open $SourceProject") "Historical message text was unexpectedly rewritten."
 
         $CheckPy = @"
 import json, sqlite3, sys
@@ -182,6 +186,9 @@ print(json.dumps({'cwd': row[0], 'rollout_path': row[1]}))
         Assert-True ($Verify.counts.selected_chats_in_state_threads -eq 1) "Verifier did not report selected chat in state threads."
         Assert-True ($Verify.ui_readiness.state_threads_ready -eq $true) "Verifier did not report state thread readiness."
         Assert-True ($Verify.ui_readiness.project_path_mapping_ready -eq $true) "Verifier did not report project path mapping readiness."
+        Assert-True ($Verify.ui_readiness.source_path_removed_ready -eq $true) "Verifier treated historical text as a structural path failure."
+        Assert-True ($Verify.ui_readiness.sqlite_quick_check_ready -eq $true) "Verifier did not report SQLite integrity readiness."
+        Assert-True ($Verify.ui_readiness.structural_source_paths_ready -eq $true) "Verifier found old structural paths after restore."
     } finally {
         Pop-Location
         $env:USERPROFILE = $oldUserProfile

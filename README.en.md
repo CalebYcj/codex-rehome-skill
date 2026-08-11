@@ -40,6 +40,8 @@ The default is a merge-safe restore: target login, configuration, and installati
 
 This is not official cloud sync and it does not keep two computers continuously synchronized. After a cross-platform move, an old conversation can remain useful historical context while its original working-directory handle no longer works. Reopen the restored project and continue in a new task when needed.
 
+Windows restore rewrites structural fields such as `cwd`, project paths, and rollout paths, but deliberately preserves old path text inside prompts, titles, and conversation bodies. Start Codex once after restore, fully quit it, then rerun verification to ensure no surviving process wrote structural paths back.
+
 Login tokens, cookies, `.env` files, private keys, `.git`, `node_modules`, virtual environments, running terminals, and unsaved work are excluded by default. Never upload a personal migration package to GitHub, a public post, or Red Skill.
 
 ## Documentation
