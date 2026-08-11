@@ -104,6 +104,39 @@ function Restore-PreservedFiles {
     }
 }
 
+function Get-RunningCodexProcesses {
+    $knownNames = @("codex.exe", "codex-code-mode-host.exe", "chatgpt.exe", "extension-host.exe")
+    try {
+        $all = @(Get-CimInstance Win32_Process -ErrorAction Stop)
+        $matchedIds = New-Object 'System.Collections.Generic.HashSet[uint32]'
+        foreach ($process in $all) {
+            $name = ([string]$process.Name).ToLowerInvariant()
+            $details = "$($process.ExecutablePath) $($process.CommandLine)".ToLowerInvariant()
+            if (($knownNames -contains $name) -or $details.Contains(".plugin-appserver\codex")) {
+                [void]$matchedIds.Add([uint32]$process.ProcessId)
+            }
+        }
+        do {
+            $added = $false
+            foreach ($process in $all) {
+                if ($matchedIds.Contains([uint32]$process.ParentProcessId) -and
+                    $matchedIds.Add([uint32]$process.ProcessId)) {
+                    $added = $true
+                }
+            }
+        } while ($added)
+
+        return @($all | Where-Object { $matchedIds.Contains([uint32]$_.ProcessId) } | ForEach-Object {
+            [pscustomobject]@{ ProcessName = $_.Name; Id = $_.ProcessId }
+        })
+    } catch {
+        $fallbackNames = @("Codex", "codex-code-mode-host", "ChatGPT", "extension-host")
+        return @(Get-Process -ErrorAction SilentlyContinue | Where-Object {
+            $fallbackNames -contains $_.ProcessName
+        })
+    }
+}
+
 function Get-SessionEntryFromJsonl {
     param([string]$Path)
 
@@ -360,15 +393,36 @@ def map_path(value):
             s = s.replace(old.replace("\\", "\\\\"), new)
     return s
 
-def map_json_text(text):
-    result = text
-    for old, new in path_pairs:
-        if not old:
+TEXT_FIELDS = {
+    "message", "messages", "content", "text", "input", "output", "instructions",
+    "title", "preview", "first_user_message",
+}
+PATH_FIELDS = {
+    "cwd", "project", "project_path", "path", "workspace_root",
+    "working_directory", "worktree", "agent_path", "rollout", "rollout_path",
+}
+
+def rewrite_structural_paths(value):
+    changed = 0
+    if isinstance(value, list):
+        for item in value:
+            changed += rewrite_structural_paths(item)
+        return changed
+    if not isinstance(value, dict):
+        return changed
+    for field, item in list(value.items()):
+        if field in TEXT_FIELDS:
             continue
-        result = result.replace(old.replace("\\", "\\\\"), new.replace("\\", "\\\\"))
-        result = result.replace(old, new)
-        result = result.replace(old.replace("\\", "/"), new.replace("\\", "/"))
-    return result
+        if isinstance(item, (dict, list)):
+            changed += rewrite_structural_paths(item)
+            continue
+        if field not in PATH_FIELDS or not isinstance(item, str):
+            continue
+        mapped = map_path(item)
+        if mapped != item:
+            value[field] = mapped
+            changed += 1
+    return changed
 
 def selected_or_exported_ids():
     ids = []
@@ -392,21 +446,34 @@ def find_session_file(thread_id):
     return direct if direct.exists() else None
 
 def rewrite_jsonl_paths():
-    changed = 0
+    changed_files = 0
+    changed_references = 0
     for tid in selected_or_exported_ids():
         path = find_session_file(tid)
         if not path or not path.exists():
             continue
-        text = path.read_text(encoding="utf-8", errors="ignore")
-        new_text = map_json_text(text)
-        if new_text != text:
+        output = []
+        file_changes = 0
+        for line in path.read_text(encoding="utf-8", errors="ignore").splitlines():
+            if not line.strip():
+                output.append("")
+                continue
+            try:
+                row = json.loads(line)
+            except Exception:
+                output.append(line)
+                continue
+            file_changes += rewrite_structural_paths(row)
+            output.append(json.dumps(row, ensure_ascii=False, separators=(",", ":")))
+        if file_changes:
             backup = path.with_name(path.name + f".backup-pathmap-{stamp}")
             if not backup.exists():
                 shutil.copy2(path, backup)
             with path.open("w", encoding="utf-8", newline="\n") as f:
-                f.write(new_text)
-            changed += 1
-    return changed
+                f.write("\n".join(output) + "\n")
+            changed_files += 1
+            changed_references += file_changes
+    return changed_files, changed_references
 
 def newest_state_db():
     dbs = sorted(codex_home.glob("state_*.sqlite"), key=lambda p: p.stat().st_mtime if p.exists() else 0, reverse=True)
@@ -544,12 +611,13 @@ def merge_global_state():
         f.write(json.dumps(data, ensure_ascii=False, separators=(",", ":")) + "\n")
     return len(target_projects)
 
-rewritten = rewrite_jsonl_paths()
+rewritten, rewritten_references = rewrite_jsonl_paths()
 imported = merge_sqlite_threads()
 registered = merge_global_state()
 report = {
     "schema": 3,
     "session_jsonl_rewritten": rewritten,
+    "session_structural_references_rewritten": rewritten_references,
     "sqlite_threads_imported": imported,
     "restored_projects_registered": registered,
     "restart_required": True,
@@ -642,13 +710,14 @@ if (-not (Test-Path -LiteralPath $SourceCodexHome -PathType Container)) {
 }
 
 if ($env:CODEX_REHOME_SKIP_RUNNING_CHECK -ne "1") {
-    $RunningCodex = Get-Process -ErrorAction SilentlyContinue | Where-Object {
-        $_.ProcessName -match "Codex"
-    }
+    while ($true) {
+        $RunningCodex = @(Get-RunningCodexProcesses)
+        if ($RunningCodex.Count -eq 0) { break }
 
-    if ($RunningCodex) {
-        Write-Host "Codex appears to be running. Close Codex before continuing."
-        Read-Host "Press Enter after Codex is closed"
+        $names = ($RunningCodex | Select-Object -ExpandProperty ProcessName -Unique) -join ", "
+        Write-Host "Codex-related processes are still running: $names"
+        Write-Host "Fully close Codex Desktop, ChatGPT, and related extension hosts before continuing."
+        Read-Host "Press Enter to check again"
     }
 }
 
