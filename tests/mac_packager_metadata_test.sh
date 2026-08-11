@@ -96,7 +96,17 @@ set -euo pipefail
 if [[ "${1:-}" == "-a" && "${2:-}" == "256" ]]; then
   shift 2
 fi
-sha256sum "$@"
+python3 - "$@" <<'PY'
+import hashlib
+import sys
+
+for name in sys.argv[1:]:
+    digest = hashlib.sha256()
+    with open(name, "rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    print(f"{digest.hexdigest()}  {name}")
+PY
 SH
 chmod +x "$FAKE_BIN/shasum"
 
